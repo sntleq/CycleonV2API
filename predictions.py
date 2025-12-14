@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Query
 import httpx
 import pandas as pd
-from prophet import Prophet
+import timesfm
 
 router = APIRouter(prefix="/predictions")
 
@@ -15,12 +15,21 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PRICES_CACHE_DIR = Path("cache/prices")
 PRICES_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-PRICES_CSV = Path("datasets/Runescape_Item_Prices.csv")
 GRAPH_URL = "https://api.weirdgloop.org/exchange/history/rs/all?id={item_id}"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 RETRIES = 5
 RETRY_DELAY = 1  # seconds
+
+tfm = timesfm.TimesFm(
+      hparams=timesfm.TimesFmHparams(
+          backend="gpu",
+          per_core_batch_size=32,
+          horizon_len=128,
+      ),
+      checkpoint=timesfm.TimesFmCheckpoint(
+          huggingface_repo_id="google/timesfm-1.0-200m-pytorch"),
+  )
 
 
 async def fetch_price_graph(client: httpx.AsyncClient, item_id: str):
@@ -53,7 +62,7 @@ async def fetch_price_graph(client: httpx.AsyncClient, item_id: str):
 
 def prepare_dataframe(item_id: str, price_data: list) -> pd.DataFrame:
     """Prepare DataFrame from Weirdgloop API data."""
-    # Convert API data to Prophet format
+    # Convert API data to format for TimesFM
     # Format: [{"id": "4151", "price": 1500000, "volume": null, "timestamp": 1211328000000}, ...]
     api_records = []
     for entry in price_data:
@@ -80,15 +89,58 @@ def prepare_dataframe(item_id: str, price_data: list) -> pd.DataFrame:
 
 
 def train_and_predict(df: pd.DataFrame) -> pd.DataFrame:
-    """Train Prophet model and generate 180-day predictions."""
-    m = Prophet()
-    m.fit(df)
+    """Use TimesFM to generate 180-day predictions."""
+    # Prepare input for TimesFM (just the price values)
+    price_series = df['y'].values
 
-    # Always predict 180 days into the future
-    future = m.make_future_dataframe(periods=180)
-    forecast = m.predict(future)
+    # TimesFM expects frequency category: 0=high freq (daily), 1=medium (weekly/monthly), 2=low (quarterly/yearly)
+    # Daily data = frequency 0
+    point_forecast, quantile_forecast = tfm.forecast(
+        [price_series],  # List of time series (we have 1)
+        freq=[0],  # Daily frequency
+    )
 
-    return forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]]
+    # Debug: Check what we got back
+    print(f"Forecast shape: {point_forecast[0].shape}")
+    if quantile_forecast is not None:
+        print(f"Quantile forecast shape: {quantile_forecast[0].shape}")
+
+    # Get the actual forecast length (might not be exactly 180)
+    forecast_length = len(point_forecast[0])
+
+    # Create forecast dataframe
+    last_date = df['ds'].max()
+    forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=forecast_length, freq='D')
+
+    # Combine historical and forecast data
+    historical_df = df.copy()
+    historical_df['yhat'] = df['y']  # For historical, yhat = actual
+    historical_df['yhat_lower'] = df['y']
+    historical_df['yhat_upper'] = df['y']
+
+    # Handle quantile forecast safely
+    if quantile_forecast is not None and len(quantile_forecast[0]) > 0:
+        yhat_lower = quantile_forecast[0][:, 0]
+        yhat_upper = quantile_forecast[0][:, -1]
+    else:
+        # Fallback if no quantiles
+        yhat_lower = point_forecast[0] * 0.9
+        yhat_upper = point_forecast[0] * 1.1
+
+    forecast_df = pd.DataFrame({
+        'ds': forecast_dates,
+        'yhat': point_forecast[0],
+        'yhat_lower': yhat_lower,
+        'yhat_upper': yhat_upper,
+    })
+
+    # Combine historical and future
+    full_forecast = pd.concat([
+        historical_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']],
+        forecast_df
+    ], ignore_index=True)
+
+    return full_forecast
 
 
 def format_predictions(forecast: pd.DataFrame, df_actual: pd.DataFrame, item_id: str, period: int) -> list:
@@ -113,7 +165,7 @@ def format_predictions(forecast: pd.DataFrame, df_actual: pd.DataFrame, item_id:
     result = []
     for _, row in filtered.iterrows():
         row_date = row["date"]
-        # Use actual API value if we have it, otherwise use Prophet prediction
+        # Use actual API value if we have it, otherwise use TimesFM prediction
         if row_date in actual_values:
             price = int(round(actual_values[row_date]))
         else:
@@ -134,14 +186,14 @@ async def get_price_prediction(
                             description="Number of days to show in output (training always uses 180 days)")
 ):
     """
-    Get price predictions for an item.
+    Get price predictions for an item using TimesFM.
 
     - **item_id**: The RuneScape item ID
     - **period**: Number of days to show in output (default: 30, max: 365)
 
-    Model always trains and predicts 180 days ahead.
+    Model always predicts 180 days ahead.
     Returns predictions from max(period, 7) days before today to period days after today.
-    Historical dates show actual API values, future dates show Prophet predictions.
+    Historical dates show actual API values, future dates show TimesFM predictions.
     """
     try:
         # Cache files
@@ -179,7 +231,7 @@ async def get_price_prediction(
         # Train model and predict (always 180 days)
         forecast = train_and_predict(df)
 
-        # Cache the full forecast with all Prophet columns
+        # Cache the full forecast with all columns
         forecast_cache = forecast.copy()
         forecast_cache["ds"] = forecast_cache["ds"].dt.strftime("%Y-%m-%d")
         with cache_file.open("w", encoding="utf-8") as f:
