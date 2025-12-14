@@ -1,0 +1,19 @@
+###
+
+GET /items
+Host: 127.0.0.1:8000
+Accept: application/json
+
+###
+
+GET /items/1042
+Host: 127.0.0.1:8000
+Accept: application/json
+
+###
+
+GET /predictions/1042?period=30
+Host: 127.0.0.1:8000
+Accept: application/json
+
+###
