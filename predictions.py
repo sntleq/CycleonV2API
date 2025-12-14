@@ -33,8 +33,8 @@ def get_model():
         _tfm_model = timesfm.TimesFm(
             hparams=timesfm.TimesFmHparams(
                 backend="cpu",
-                per_core_batch_size=32,
-                horizon_len=128,
+                per_core_batch_size=4,
+                horizon_len=90,
             ),
             checkpoint=timesfm.TimesFmCheckpoint(
                 huggingface_repo_id="google/timesfm-1.0-200m-pytorch"),
