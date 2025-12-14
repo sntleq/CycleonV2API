@@ -33,7 +33,7 @@ def get_model():
         _tfm_model = timesfm.TimesFm(
             hparams=timesfm.TimesFmHparams(
                 backend="cpu",
-                per_core_batch_size=4,
+                per_core_batch_size=1,
                 horizon_len=90,
             ),
             checkpoint=timesfm.TimesFmCheckpoint(
