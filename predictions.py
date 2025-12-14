@@ -23,7 +23,7 @@ RETRY_DELAY = 1  # seconds
 
 tfm = timesfm.TimesFm(
       hparams=timesfm.TimesFmHparams(
-          backend="gpu",
+          backend="cpu",
           per_core_batch_size=32,
           horizon_len=128,
       ),

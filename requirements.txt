@@ -1,6 +1,7 @@
 httpx~=0.28.1
 fastapi~=0.124.4
 pandas~=2.3.3
-torch~=2.9.1
-timesfm[torch]~=1.3.0
 uvicorn[standard]~=0.23.2
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch~=2.9.1
+timesfm~=1.3.0
