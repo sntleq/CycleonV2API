@@ -21,15 +21,26 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 RETRIES = 5
 RETRY_DELAY = 1  # seconds
 
-tfm = timesfm.TimesFm(
-      hparams=timesfm.TimesFmHparams(
-          backend="cpu",
-          per_core_batch_size=32,
-          horizon_len=128,
-      ),
-      checkpoint=timesfm.TimesFmCheckpoint(
-          huggingface_repo_id="google/timesfm-1.0-200m-pytorch"),
-  )
+# Global variable to hold the model (lazy loaded)
+_tfm_model = None
+
+
+def get_model():
+    """Lazy load the TimesFM model."""
+    global _tfm_model
+    if _tfm_model is None:
+        print("Loading TimesFM model...")
+        _tfm_model = timesfm.TimesFm(
+            hparams=timesfm.TimesFmHparams(
+                backend="cpu",
+                per_core_batch_size=32,
+                horizon_len=128,
+            ),
+            checkpoint=timesfm.TimesFmCheckpoint(
+                huggingface_repo_id="google/timesfm-1.0-200m-pytorch"),
+        )
+        print("TimesFM model loaded successfully!")
+    return _tfm_model
 
 
 async def fetch_price_graph(client: httpx.AsyncClient, item_id: str):
@@ -89,7 +100,10 @@ def prepare_dataframe(item_id: str, price_data: list) -> pd.DataFrame:
 
 
 def train_and_predict(df: pd.DataFrame) -> pd.DataFrame:
-    """Use TimesFM to generate 180-day predictions."""
+    """Use TimesFM to generate predictions."""
+    # Get the model (lazy loaded)
+    tfm = get_model()
+
     # Prepare input for TimesFM (just the price values)
     price_series = df['y'].values
 
@@ -105,7 +119,7 @@ def train_and_predict(df: pd.DataFrame) -> pd.DataFrame:
     if quantile_forecast is not None:
         print(f"Quantile forecast shape: {quantile_forecast[0].shape}")
 
-    # Get the actual forecast length (might not be exactly 180)
+    # Get the actual forecast length
     forecast_length = len(point_forecast[0])
 
     # Create forecast dataframe
@@ -183,7 +197,7 @@ def format_predictions(forecast: pd.DataFrame, df_actual: pd.DataFrame, item_id:
 async def get_price_prediction(
         item_id: str,
         period: int = Query(default=30, ge=1, le=365,
-                            description="Number of days to show in output (training always uses 180 days)")
+                            description="Number of days to show in output")
 ):
     """
     Get price predictions for an item using TimesFM.
@@ -191,7 +205,6 @@ async def get_price_prediction(
     - **item_id**: The RuneScape item ID
     - **period**: Number of days to show in output (default: 30, max: 365)
 
-    Model always predicts 180 days ahead.
     Returns predictions from max(period, 7) days before today to period days after today.
     Historical dates show actual API values, future dates show TimesFM predictions.
     """
@@ -228,7 +241,7 @@ async def get_price_prediction(
         # Prepare DataFrame
         df = prepare_dataframe(item_id, price_data)
 
-        # Train model and predict (always 180 days)
+        # Train model and predict
         forecast = train_and_predict(df)
 
         # Cache the full forecast with all columns
