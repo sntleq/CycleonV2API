@@ -33,8 +33,8 @@ def get_model():
         _tfm_model = timesfm.TimesFm(
             hparams=timesfm.TimesFmHparams(
                 backend="cpu",
-                per_core_batch_size=1,
-                horizon_len=90,
+                per_core_batch_size=8,
+                horizon_len=128,
             ),
             checkpoint=timesfm.TimesFmCheckpoint(
                 huggingface_repo_id="google/timesfm-1.0-200m-pytorch"),
@@ -88,6 +88,10 @@ def prepare_dataframe(item_id: str, price_data: list) -> pd.DataFrame:
     df = pd.DataFrame(api_records)
     df = df.sort_values("ds").reset_index(drop=True)
 
+    # Limit to last 365 days to reduce memory usage
+    if len(df) > 365:
+        df = df.tail(365).reset_index(drop=True)
+
     # Data quality check
     print(f"Item {item_id} price stats (Weirdgloop API):")
     print(f"  Min: {df['y'].min():,.0f}")
@@ -116,8 +120,6 @@ def train_and_predict(df: pd.DataFrame) -> pd.DataFrame:
 
     # Debug: Check what we got back
     print(f"Forecast shape: {point_forecast[0].shape}")
-    if quantile_forecast is not None:
-        print(f"Quantile forecast shape: {quantile_forecast[0].shape}")
 
     # Get the actual forecast length
     forecast_length = len(point_forecast[0])
@@ -126,31 +128,18 @@ def train_and_predict(df: pd.DataFrame) -> pd.DataFrame:
     last_date = df['ds'].max()
     forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=forecast_length, freq='D')
 
-    # Combine historical and forecast data
+    # Combine historical and forecast data (only yhat, no upper/lower bounds)
     historical_df = df.copy()
     historical_df['yhat'] = df['y']  # For historical, yhat = actual
-    historical_df['yhat_lower'] = df['y']
-    historical_df['yhat_upper'] = df['y']
-
-    # Handle quantile forecast safely
-    if quantile_forecast is not None and len(quantile_forecast[0]) > 0:
-        yhat_lower = quantile_forecast[0][:, 0]
-        yhat_upper = quantile_forecast[0][:, -1]
-    else:
-        # Fallback if no quantiles
-        yhat_lower = point_forecast[0] * 0.9
-        yhat_upper = point_forecast[0] * 1.1
 
     forecast_df = pd.DataFrame({
         'ds': forecast_dates,
         'yhat': point_forecast[0],
-        'yhat_lower': yhat_lower,
-        'yhat_upper': yhat_upper,
     })
 
     # Combine historical and future
     full_forecast = pd.concat([
-        historical_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']],
+        historical_df[['ds', 'yhat']],
         forecast_df
     ], ignore_index=True)
 
