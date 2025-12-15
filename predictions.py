@@ -1,7 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 import httpx
@@ -137,7 +137,7 @@ def format_predictions(
     item_id: str,
     period: int
 ):
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     start = today - timedelta(days=max(period, 7))
     end = today + timedelta(days=period)
 

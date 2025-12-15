@@ -17,3 +17,15 @@ Host: 127.0.0.1:8000
 Accept: application/json
 
 ###
+
+GET /rankings/price?n=8
+Host: 127.0.0.1:8000
+Accept: application/json
+
+###
+
+GET /rankings/volume?n=8
+Host: 127.0.0.1:8000
+Accept: application/json
+
+###
